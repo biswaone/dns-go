@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math/rand"
@@ -24,6 +25,22 @@ type DNSQuestion struct {
 	Name  []byte
 	Type  uint16
 	Class uint16
+}
+
+type DNSRecord struct {
+	Name  []byte
+	Type  uint16
+	Class uint16
+	TTL   uint32
+	Data  []byte
+}
+
+type DNSPacket struct {
+	header      DNSHeader
+	questions   []DNSQuestion
+	answers     []DNSRecord
+	authorities []DNSRecord
+	additionals []DNSRecord
 }
 
 func HeaderToBytes(header DNSHeader) []byte {
@@ -75,10 +92,134 @@ func buildQuery(domainName string, recordType uint16) []byte {
 	return append(HeaderToBytes(header), QuestionToBytes(question)...)
 }
 
+func decodeName(reader *bytes.Reader) []byte {
+	var parts [][]byte
+	for {
+		length, err := reader.ReadByte()
+		if err != nil {
+			fmt.Println("Error reading length:", err)
+			return nil
+		}
+
+		if length == 0 {
+			break
+		} else if length&0xC0 != 0 {
+			pointerBytes := []byte{length & 0x3F, 0}
+			_, err := reader.Read(pointerBytes[1:])
+			if err != nil {
+				fmt.Println("Error reading pointer bytes:", err)
+				return nil
+			}
+
+			pointer := binary.BigEndian.Uint16(pointerBytes)
+			currentPos, _ := reader.Seek(0, 1)
+			reader.Seek(int64(pointer), 0)
+			result := decodeName(reader)
+			reader.Seek(currentPos, 0)
+
+			parts = append(parts, result)
+			break
+		} else {
+			part := make([]byte, length)
+			_, err := reader.Read(part)
+			if err != nil {
+				fmt.Println("Error reading part:", err)
+				return nil
+			}
+
+			parts = append(parts, part)
+		}
+	}
+
+	return bytes.Join(parts, []byte("."))
+}
+
+func parseHeader(reader *bytes.Reader) (DNSHeader, error) {
+	var header DNSHeader
+	err := binary.Read(reader, binary.BigEndian, &header)
+	if err != nil {
+		return DNSHeader{}, err
+	}
+	return header, nil
+}
+
+func parseQuestion(reader *bytes.Reader) (DNSQuestion, error) {
+	name := decodeName(reader)
+
+	data := make([]byte, 4)
+	_, err := reader.Read(data)
+	if err != nil {
+		return DNSQuestion{}, err
+	}
+
+	var question DNSQuestion
+	question.Name = name
+	question.Type = binary.BigEndian.Uint16(data[0:2])
+	question.Class = binary.BigEndian.Uint16(data[2:4])
+
+	return question, nil
+}
+
+func parseRecord(reader *bytes.Reader) (DNSRecord, error) {
+	name := decodeName(reader)
+	data := make([]byte, 10)
+	_, err := reader.Read(data)
+	if err != nil {
+		return DNSRecord{}, err
+	}
+	var dnsRecord DNSRecord
+	dnsRecord.Name = name
+	dnsRecord.Type = binary.BigEndian.Uint16(data[:2])
+	dnsRecord.Class = binary.BigEndian.Uint16(data[2:4])
+	dnsRecord.TTL = binary.BigEndian.Uint32(data[4:8])
+
+	dataLen := binary.BigEndian.Uint16(data[8:10])
+	dnsRecord.Data = make([]byte, dataLen)
+	_, err = reader.Read(dnsRecord.Data)
+	if err != nil {
+		return DNSRecord{}, err
+	}
+
+	return dnsRecord, nil
+
+}
+
+func parseDNSPacket(reader *bytes.Reader) DNSPacket {
+	header, _ := parseHeader(reader)
+	questions := make([]DNSQuestion, header.NumQuestions)
+	answers := make([]DNSRecord, header.NumAnswers)
+	authorities := make([]DNSRecord, header.NumAuthorities)
+	additionals := make([]DNSRecord, header.NumAdditionals)
+
+	for i := range questions {
+		questions[i], _ = parseQuestion(reader)
+	}
+
+	for i := range answers {
+		answers[i], _ = parseRecord(reader)
+	}
+
+	for i := range authorities {
+		authorities[i], _ = parseRecord(reader)
+	}
+
+	for i := range additionals {
+		additionals[i], _ = parseRecord(reader)
+	}
+
+	return DNSPacket{
+		header:      header,
+		questions:   questions,
+		answers:     answers,
+		authorities: authorities,
+		additionals: additionals,
+	}
+}
+
 func main() {
 
-	query := buildQuery("example.com", TYPE_A)
-	fmt.Printf("%#v\n", query)
+	query := buildQuery("www.example.com", TYPE_A)
+	fmt.Printf("%#v\n", string(query))
 
 	// Create a UDP socket
 	sock, err := net.Dial("udp", "8.8.8.8:53")
@@ -94,4 +235,18 @@ func main() {
 		fmt.Println("Error sending query:", err)
 		return
 	}
+
+	// Read the response
+	response := make([]byte, 1024)
+	_, err = sock.Read(response)
+	if err != nil {
+		fmt.Println("Error reading response:", err)
+		return
+	}
+
+	reader := bytes.NewReader(response)
+
+	packet := parseDNSPacket(reader)
+	fmt.Printf("%#v\n", packet)
+
 }
