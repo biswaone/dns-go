@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math/rand"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 )
 
-var TYPE_A uint16 = 1
-var CLASS_IN uint16 = 1
+const TYPE_A uint16 = 1
+const TYPE_NS uint16 = 2
+const CLASS_IN uint16 = 1
 
 type DNSHeader struct {
 	ID             uint16
@@ -78,11 +82,11 @@ func buildQuery(domainName string, recordType uint16) []byte {
 	r := rand.New(rand.NewSource(1))
 	name := encodeDNSName(domainName)
 	id := uint16(r.Intn(65536))
-	RECURSION_DESIRED := uint16(1 << 8)
+	//RECURSION_DESIRED := uint16(1 << 8)
 	header := DNSHeader{
 		ID:           id,
 		NumQuestions: 1,
-		Flags:        RECURSION_DESIRED,
+		Flags:        0,
 	}
 	question := DNSQuestion{
 		Name:  []byte(name),
@@ -175,13 +179,17 @@ func parseRecord(reader *bytes.Reader) (DNSRecord, error) {
 
 	dataLen := binary.BigEndian.Uint16(data[8:10])
 	dnsRecord.Data = make([]byte, dataLen)
-	_, err = reader.Read(dnsRecord.Data)
-	if err != nil {
-		return DNSRecord{}, err
+
+	if dnsRecord.Type == TYPE_NS {
+		dnsRecord.Data = decodeName(reader)
+	} else {
+		_, err := reader.Read(dnsRecord.Data)
+		if err != nil {
+			return DNSRecord{}, err
+		}
 	}
 
 	return dnsRecord, nil
-
 }
 
 func parseDNSPacket(reader *bytes.Reader) DNSPacket {
@@ -216,37 +224,99 @@ func parseDNSPacket(reader *bytes.Reader) DNSPacket {
 	}
 }
 
-func main() {
+func ipToString(ip []byte) string {
+	var ipStrings []string
+	for _, hex := range ip {
+		decimal := strconv.Itoa(int(hex))
+		ipStrings = append(ipStrings, decimal)
+	}
+	return strings.Join(ipStrings, ".")
+}
 
-	query := buildQuery("www.example.com", TYPE_A)
-	fmt.Printf("%#v\n", string(query))
+func sendQuery(ipAddress string, domainName string, recordType uint16) []byte {
+	query := buildQuery(domainName, recordType)
+	port := ":53"
+	address := ipAddress + port
 
 	// Create a UDP socket
-	sock, err := net.Dial("udp", "8.8.8.8:53")
+	sock, err := net.Dial("udp", address)
 	if err != nil {
-		fmt.Println("Error creating socket:", err)
-		return
+		log.Fatal(err)
 	}
 	defer sock.Close()
 
 	// Send the query to 8.8.8.8:53
 	_, err = sock.Write([]byte(query))
 	if err != nil {
-		fmt.Println("Error sending query:", err)
-		return
+		log.Fatal(err)
 	}
 
 	// Read the response
 	response := make([]byte, 1024)
 	_, err = sock.Read(response)
 	if err != nil {
-		fmt.Println("Error reading response:", err)
-		return
+		log.Fatal(err)
 	}
 
-	reader := bytes.NewReader(response)
+	return response
+}
 
-	packet := parseDNSPacket(reader)
-	fmt.Printf("%#v\n", packet)
+func getAnswer(packet DNSPacket) string {
+	for _, answer := range packet.answers {
+		if answer.Type == TYPE_A {
+			return ipToString(answer.Data)
+		}
+	}
+	return ""
+}
+
+func getNameServerIP(packet DNSPacket) string {
+	for _, authority := range packet.additionals {
+		if authority.Type == TYPE_A {
+			return ipToString(authority.Data)
+		}
+	}
+	return ""
+}
+
+func getNameServer(packet DNSPacket) string {
+	for _, authority := range packet.authorities {
+		if authority.Type == TYPE_NS {
+			return string(authority.Data[:])
+		}
+	}
+	return ""
+}
+
+func resolve(domainName string, recordType uint16) string {
+	nameServer := "198.41.0.4"
+	for {
+		fmt.Printf("Querying %s for %s\n", nameServer, domainName)
+		response := sendQuery(nameServer, domainName, recordType)
+		reader := bytes.NewReader(response)
+		packet := parseDNSPacket(reader)
+		ip := getAnswer(packet)
+		if ip != "" {
+			return ip
+		} else if nsIP := getNameServerIP(packet); nsIP != "" {
+			nameServer = nsIP
+		} else if nsDomain := getNameServer(packet); nsDomain != "" {
+			nameServer = resolve(nsDomain, TYPE_A)
+		} else {
+			log.Fatal("something went wrong")
+		}
+
+	}
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		log.Fatal("Domain Name missing")
+	}
+
+	domainName := os.Args[1]
+
+	ip := resolve(domainName, TYPE_A)
+	fmt.Printf("The IP of %s is %s \n", domainName, ip)
 
 }
