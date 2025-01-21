@@ -20,7 +20,7 @@ A simple DNS resolver implemented in Go that demonstrates how DNS resolution wor
 1. Clone the repository:
 ```bash
 git clone https://github.com/biswaone/dns-go
-cd dns-resolver
+cd dns-go
 ```
 
 2. Build the program:
@@ -33,7 +33,7 @@ go build
 Run the program with a domain name and record type as arguments:
 
 ```bash
-./dns-resolver <record_type> <domain_name> 
+./dns-go <record_type> <domain_name> 
 ```
 
 Where:
@@ -49,7 +49,7 @@ Look up an A record (IP address):
 
 Look up an NS record (nameserver):
 ```bash
-./dns-resolver NS example.com 
+./dns-go NS example.com 
 ```
 
 ### Sample Output
