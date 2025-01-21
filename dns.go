@@ -295,6 +295,15 @@ func resolve(domainName string, recordType uint16) string {
 		response := sendQuery(nameServer, domainName, recordType)
 		reader := bytes.NewReader(response)
 		packet := parseDNSPacket(reader)
+
+		if recordType == TYPE_NS {
+			for _, answer := range packet.answers {
+				if answer.Type == TYPE_NS {
+					return string(answer.Data[:])
+				}
+			}
+		}
+
 		ip := getAnswer(packet)
 		if ip != "" {
 			return ip
@@ -309,14 +318,39 @@ func resolve(domainName string, recordType uint16) string {
 	}
 }
 
+func parseRecordType(recordTypeStr string) (uint16, error) {
+	switch strings.ToUpper(recordTypeStr) {
+	case "A":
+		return TYPE_A, nil
+	case "NS":
+		return TYPE_NS, nil
+	default:
+		return 0, fmt.Errorf("unsupported record type: %s", recordTypeStr)
+	}
+}
+
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatal("Domain Name missing")
+	if len(os.Args) < 3 {
+		fmt.Println("Usage: program <record_type> <domain_name>")
+		fmt.Println("Record types: A, NS")
+		os.Exit(1)
 	}
 
-	domainName := os.Args[1]
+	domainName := os.Args[2]
+	recordTypeStr := os.Args[1]
 
-	ip := resolve(domainName, TYPE_A)
-	fmt.Printf("The IP of %s is %s \n", domainName, ip)
+	recordType, err := parseRecordType(recordTypeStr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	switch recordType {
+	case TYPE_A:
+		ip := resolve(domainName, TYPE_A)
+		fmt.Printf("The IP of %s is %s\n", domainName, ip)
+	case TYPE_NS:
+		ns := resolve(domainName, TYPE_NS)
+		fmt.Printf("The nameserver for %s is %s\n", domainName, ns)
+	}
 
 }
